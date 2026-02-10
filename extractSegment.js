@@ -20,7 +20,7 @@ const CACHE_TTL = 5 * 60 * 1000;
 const PROVIDER_CONFIGS = {
   gemini: {
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
-    defaultModel: 'gemini-1.5-flash',
+    defaultModel: 'gemini-3-flash-preview',
     authType: 'query', // API key in query param
     buildRequest: (prompt, model) => ({
       url: `/${model}:generateContent`,
