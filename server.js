@@ -118,7 +118,14 @@ async function fetchTrafficWithFallback(road, country, town) {
   return results;
 }
 
+const path = require('path');
+
+// Serve frontend at root, API info at /api
 app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.get('/api', (req, res) => {
   res.json({
     service: 'Traffic API MVP',
     version: '1.2.0',
