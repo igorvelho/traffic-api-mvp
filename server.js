@@ -33,9 +33,12 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// Load valid API keys from environment
+const VALID_API_KEYS = (process.env.VALID_API_KEYS || 'demo-key-free,demo-key-pro,demo-key-enterprise').split(',').map(k => k.trim());
+
 const apiKeyAuth = (req, res, next) => {
   const apiKey = req.headers['x-api-key'];
-  if (!apiKey || !['demo-key-free', 'demo-key-pro', 'demo-key-enterprise'].includes(apiKey)) {
+  if (!apiKey || !VALID_API_KEYS.includes(apiKey)) {
     return res.status(401).json({ error: 'Invalid or missing API key', message: 'Use x-api-key: demo-key-free' });
   }
   next();
