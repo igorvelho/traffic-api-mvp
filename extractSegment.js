@@ -30,8 +30,12 @@ const PROVIDER_CONFIGS = {
         }],
         generationConfig: {
           temperature: 0.1,
-          maxOutputTokens: 1024,
+          maxOutputTokens: 2048,
           responseMimeType: 'application/json'
+        },
+        // Disable thinking mode to save tokens for actual response
+        thinkingConfig: {
+          thinkingBudget: 0
         }
       }
     }),
