@@ -8,9 +8,12 @@ A global traffic data aggregator API that normalizes traffic data from multiple 
 # Install dependencies
 npm install
 
-# Configure environment (optional - for LLM features)
+# Configure environment
 cp .env.example .env
-# Edit .env and add your LLM_API_KEY for segment extraction
+
+# Edit .env and add required API keys:
+# - GOOGLE_MAPS_API_KEY: For traffic fallback (get free tier at Google Cloud)
+# - LLM_API_KEY: For segment extraction (optional, enables AI features)
 
 # Start the server
 npm start
@@ -58,6 +61,18 @@ curl -H "x-api-key: demo-key-free" "http://localhost:3000/compare?road=M1"
 ### 4. List Data Sources
 ```bash
 curl http://localhost:3000/sources
+```
+
+### 5. Check Google Maps API Usage
+```bash
+curl -H "x-api-key: demo-key-free" "http://localhost:3000/google/stats"
+```
+
+### 6. Local Street Traffic (Google Maps Fallback)
+```bash
+# Local streets not covered by TII/WebTRIS
+curl -H "x-api-key: demo-key-free" \
+  "http://localhost:3000/traffic?road=George%27s%20Street&town=Drogheda&country=IE"
 ```
 
 ## Demo API Keys
@@ -189,6 +204,7 @@ curl http://localhost:3000/sources
 - **Update**: Every 5 minutes
 - **Coverage**: All Irish national roads
 - **Cost**: Free (CC BY 4.0)
+- **Priority**: 1 (Primary)
 
 ### 2. WebTRIS (UK) 🇬🇧
 - **URL**: https://webtris.nationalhighways.co.uk/api
@@ -196,6 +212,15 @@ curl http://localhost:3000/sources
 - **Update**: Variable (up to 1 minute)
 - **Coverage**: England motorways and A-roads
 - **Cost**: Free
+- **Priority**: 1 (Primary)
+
+### 3. Google Maps (Global) 🗺️
+- **URL**: https://maps.googleapis.com/maps/api/directions
+- **Format**: REST JSON
+- **Update**: Real-time
+- **Coverage**: All roads globally
+- **Cost**: Pay-per-use (optimized with caching)
+- **Priority**: 2 (Fallback only)
 
 ## Architecture
 
@@ -209,8 +234,39 @@ curl http://localhost:3000/sources
                         ┌──────────┐              ┌──────────────┐
                         │ Rate Limiter            │ TII (IE)     │
                         │ API Key Auth            │ WebTRIS (UK) │
+                        │ Smart Routing           │ Google Maps  │
+                        │ Fallback Logic          │ (Fallback)   │
                         └──────────┘              └──────────────┘
 ```
+
+## Smart Routing & Fallback
+
+The API uses intelligent routing to minimize costs while maximizing coverage:
+
+### Routing Logic
+1. **IE Roads** → Try TII first → Google fallback if no data
+2. **UK Roads** → Try WebTRIS first → Google fallback if no data
+3. **Local Streets** → Skip free sources → Google only
+4. **Other Countries** → Go directly to Google Maps
+
+### Example: George's Street, Drogheda
+```bash
+curl -H "x-api-key: demo-key-free" \
+  "http://localhost:3000/traffic?road=George%27s%20Street&town=Drogheda&country=IE"
+```
+
+**Routing:**
+- TII: No data (local street not covered)
+- WebTRIS: Skipped (wrong country)
+- Google Maps: Returns real data
+  - Distance: ~0.6km
+  - Travel time: 3 mins
+  - Congestion: fluid
+
+### Cost Optimization
+- **Caching**: All sources cached for 5 minutes
+- **Fallback-only**: Google Maps only called when free sources return empty
+- **Monitoring**: Track API usage at `/google/stats`
 
 ## Value Proposition
 
@@ -299,6 +355,26 @@ curl -X POST -H "x-api-key: demo-key-free" "http://localhost:3000/cache/clear"
 curl -H "x-api-key: demo-key-free" "http://localhost:3000/llm/status"
 ```
 
+## Google Maps Configuration
+
+To enable Google Maps fallback for roads not covered by free sources:
+
+1. **Get API Key**: https://developers.google.com/maps/documentation/directions/get-api-key
+2. **Enable Directions API** in Google Cloud Console
+3. **Add to `.env`**:
+   ```bash
+   GOOGLE_MAPS_API_KEY=your_api_key_here
+   ```
+
+### Cost Management
+- Google Maps Directions API is only called when **free sources return no data**
+- Results are cached for **5 minutes** to prevent redundant calls
+- Monitor usage at `/google/stats`
+
+### Free Tier Limits
+- **$200/month credit** (covers ~40,000 requests)
+- Typical usage: < 100 requests/day for local street queries
+
 ### Performance
 - First request: ~1-2 seconds (LLM processing)
 - Cached requests: ~50ms (instant)
@@ -307,11 +383,14 @@ curl -H "x-api-key: demo-key-free" "http://localhost:3000/llm/status"
 ## Roadmap
 
 ### Phase 1 (MVP) ✅
-- [x] IE + UK data sources
+- [x] IE + UK data sources (TII, WebTRIS)
+- [x] Google Maps API fallback for global coverage 🆕
+- [x] Smart routing: Free APIs first, fallback when needed 🆕
+- [x] Cost-optimized with caching
 - [x] Basic API with auth
 - [x] Rate limiting
-- [x] **LLM-powered segment extraction** 🆕
-- [x] **Human-readable location descriptions** 🆕
+- [x] **LLM-powered segment extraction**
+- [x] **Human-readable location descriptions**
 
 ### Phase 2 (Expansion)
 - [ ] Scotland (Traffic Scotland)

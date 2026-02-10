@@ -2,7 +2,12 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const { extractSegment, extractSegmentsBatch, getCacheStats, clearCache, getLLMStatus } = require('./extractSegment');
+const { extractSegment, extractSegmentsBatch, getCacheStats: getLLMCacheStats, clearCache: clearLLMCache, getLLMStatus } = require('./extractSegment');
+
+// Import traffic data adapters
+const { fetchTIITraffic, isIrishRoad, getCacheStats: getTIICacheStats, clearCache: clearTIICache } = require('./tiiAdapter');
+const { fetchWebTRISTraffic, isUKRoad, getCacheStats: getWebTRISCacheStats, clearCache: clearWebTRISCache } = require('./webtrisAdapter');
+const { fetchRoadTraffic, fetchGoogleMapsTraffic, isGoogleMapsPreferred, getAPIStats: getGoogleStats, getCacheStats: getGoogleCacheStats, clearCache: clearGoogleCache } = require('./googleMapsAdapter');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -26,81 +31,109 @@ const apiKeyAuth = (req, res, next) => {
   next();
 };
 
-// Mock traffic data
-const mockTrafficData = {
-  IE: [
-    {
-      source: 'TII-Ireland',
-      road: 'M1',
-      direction: 'Northbound',
-      travelTimeMinutes: 28,
-      freeFlowTimeMinutes: 22,
-      delayMinutes: 6,
-      congestionLevel: 'moderate',
-      timestamp: new Date().toISOString()
-    },
-    {
-      source: 'TII-Ireland',
-      road: 'M1',
-      direction: 'Southbound',
-      travelTimeMinutes: 26,
-      freeFlowTimeMinutes: 22,
-      delayMinutes: 4,
-      congestionLevel: 'light',
-      timestamp: new Date().toISOString()
+/**
+ * Smart traffic data fetching with fallback logic
+ * Priority: 1. Free sources (TII, WebTRIS) 2. Google Maps fallback
+ */
+async function fetchTrafficWithFallback(road, country, town) {
+  const results = {
+    data: [],
+    sourcesUsed: [],
+    fallbackUsed: false,
+    errors: [],
+    details: []
+  };
+  
+  const normalizedRoad = road.toUpperCase();
+  const normalizedCountry = country ? country.toUpperCase() : 'ALL';
+  const isLocalStreet = town && !road.match(/^(M|N|A)[0-9]+/i);
+  
+  // === SMART ROUTING LOGIC ===
+  
+  // 1. Try FREE sources based on country/road patterns
+  
+  // Ireland: Try TII first
+  if ((normalizedCountry === 'ALL' || normalizedCountry === 'IE') && (isIrishRoad(road) || normalizedRoad === 'M1')) {
+    results.details.push({ step: 'Trying TII (Ireland) for ' + road });
+    const tiiResult = await fetchTIITraffic(road);
+    results.sourcesUsed.push('TII-Ireland');
+    
+    if (tiiResult.data && tiiResult.data.length > 0) {
+      results.data.push(...tiiResult.data);
+      results.details.push({ 
+        step: 'TII returned ' + tiiResult.data.length + ' records',
+        fromCache: tiiResult.fromCache 
+      });
+    } else {
+      results.details.push({ step: 'TII returned no data', error: tiiResult.error });
     }
-  ],
-  UK: [
-    {
-      source: 'WebTRIS-UK',
-      siteId: '19446',
-      road: 'M1',
-      direction: 'Southbound',
-      location: { lat: 52.198, lon: -0.915 },
-      vehicleFlow: 2450,
-      averageSpeed: 65,
-      congestionLevel: 'light',
-      timestamp: new Date().toISOString()
-    },
-    {
-      source: 'WebTRIS-UK',
-      siteId: '19450',
-      road: 'M1',
-      direction: 'Northbound',
-      location: { lat: 52.187, lon: -0.898 },
-      vehicleFlow: 2180,
-      averageSpeed: 72,
-      congestionLevel: 'none',
-      timestamp: new Date().toISOString()
-    },
-    {
-      source: 'WebTRIS-UK',
-      siteId: '19478',
-      road: 'M1',
-      direction: 'Northbound',
-      location: { lat: 52.195, lon: -0.911 },
-      vehicleFlow: 2890,
-      averageSpeed: 48,
-      congestionLevel: 'moderate',
-      timestamp: new Date().toISOString()
+  }
+  
+  // UK: Try WebTRIS first
+  if ((normalizedCountry === 'ALL' || normalizedCountry === 'UK') && (isUKRoad(road) || normalizedRoad === 'M1')) {
+    results.details.push({ step: 'Trying WebTRIS (UK) for ' + road });
+    const webtrisResult = await fetchWebTRISTraffic(road);
+    results.sourcesUsed.push('WebTRIS-UK');
+    
+    if (webtrisResult.data && webtrisResult.data.length > 0) {
+      results.data.push(...webtrisResult.data);
+      results.details.push({ 
+        step: 'WebTRIS returned ' + webtrisResult.data.length + ' records',
+        fromCache: webtrisResult.fromCache 
+      });
+    } else {
+      results.details.push({ step: 'WebTRIS returned no data', error: webtrisResult.error });
     }
-  ]
-};
+  }
+  
+  // 2. If no data from free sources, FALLBACK to Google Maps
+  
+  const hasFreeData = results.data.length > 0;
+  const shouldTryGoogle = !hasFreeData || isLocalStreet || isGoogleMapsPreferred(road, town, country);
+  
+  if (shouldTryGoogle) {
+    results.details.push({ step: 'Falling back to Google Maps for ' + road });
+    results.fallbackUsed = true;
+    results.sourcesUsed.push('GoogleMaps');
+    
+    const countryName = normalizedCountry === 'IE' ? 'Ireland' : 
+                        normalizedCountry === 'UK' ? 'United Kingdom' : 
+                        normalizedCountry === 'ALL' ? '' : normalizedCountry;
+    
+    const googleResult = await fetchRoadTraffic(road, town, countryName);
+    
+    if (googleResult.data && googleResult.data.length > 0) {
+      results.data.push(...googleResult.data);
+      results.details.push({ 
+        step: 'Google Maps returned ' + googleResult.data.length + ' records',
+        fromCache: googleResult.fromCache 
+      });
+    } else {
+      results.details.push({ step: 'Google Maps returned no data', error: googleResult.error });
+      if (googleResult.error) results.errors.push(googleResult.error);
+    }
+  }
+  
+  return results;
+}
 
 app.get('/', (req, res) => {
   res.json({
     service: 'Traffic API MVP',
-    version: '1.1.0',
+    version: '1.2.0',
     status: 'operational',
     endpoints: {
-      traffic: '/traffic?road=M1&country=IE&extract=true (extract=true enables LLM segment analysis)',
+      traffic: '/traffic?road=M1&country=IE&town=Dublin&extract=true',
       compare: '/compare?road=M1',
       sources: '/sources',
       extract: '/extract (POST - LLM segment extraction demo)',
       cache: '/cache/stats (cache statistics)',
-      llmStatus: '/llm/status (LLM configuration)'
+      llmStatus: '/llm/status (LLM configuration)',
+      googleStats: '/google/stats (Google Maps API usage)'
     },
     features: [
+      'Multi-source traffic aggregation (TII, WebTRIS, Google Maps)',
+      'Smart routing: Free APIs first, Google fallback',
       'LLM-powered segment extraction',
       'Human-readable location descriptions',
       'Response caching (5min TTL)'
@@ -111,31 +144,51 @@ app.get('/', (req, res) => {
 app.get('/sources', (req, res) => {
   res.json({
     sources: [
-      { id: 'tii-ireland', name: 'Transport Infrastructure Ireland', country: 'IE', coverage: 'National Roads', updateFrequency: '5 minutes', cost: 'Free' },
-      { id: 'webtris-uk', name: 'National Highways WebTRIS', country: 'UK', coverage: 'England Motorways', updateFrequency: '1-15 minutes', cost: 'Free' }
-    ]
+      { id: 'tii-ireland', name: 'Transport Infrastructure Ireland', country: 'IE', coverage: 'National Roads', updateFrequency: '5 minutes', cost: 'Free', priority: 1 },
+      { id: 'webtris-uk', name: 'National Highways WebTRIS', country: 'UK', coverage: 'England Motorways', updateFrequency: '1-15 minutes', cost: 'Free', priority: 1 },
+      { id: 'google-maps', name: 'Google Maps Directions API', country: 'Global', coverage: 'All roads', updateFrequency: 'Real-time', cost: 'Pay-per-use', priority: 2 }
+    ],
+    routingLogic: {
+      description: 'Smart routing with fallback',
+      steps: [
+        '1. Check if road is in Ireland → Try TII API',
+        '2. Check if road is in UK → Try WebTRIS API', 
+        '3. If no data OR local street → Fallback to Google Maps API',
+        '4. Return aggregated data from all successful sources'
+      ],
+      example: {
+        'George\'s Street, Drogheda, IE': {
+          step1: 'TII: No data (local street not covered)',
+          step2: 'WebTRIS: Skipped (Ireland)',
+          step3: 'Google Maps: Returns real data',
+          result: 'Distance: 0.6km, Time: 3 mins, Congestion: fluid'
+        }
+      }
+    }
   });
 });
 
 app.get('/traffic', apiKeyAuth, async (req, res) => {
-  const { road, country = 'ALL', extract = 'false' } = req.query;
+  const { road, country = 'ALL', town, extract = 'false' } = req.query;
   const shouldExtract = extract === 'true';
   
   if (!road) {
-    return res.status(400).json({ error: 'Road parameter required', example: '/traffic?road=M1&country=UK&extract=true' });
+    return res.status(400).json({ 
+      error: 'Road parameter required', 
+      examples: [
+        '/traffic?road=M1&country=IE (Ireland motorway)',
+        '/traffic?road=M1&country=UK (UK motorway)',
+        '/traffic?road=George%27s%20Street&town=Drogheda&country=IE (Local street)'
+      ]
+    });
   }
 
   const startTime = Date.now();
-  const data = [];
-
-  if ((country === 'ALL' || country === 'IE') && road.toUpperCase() === 'M1') {
-    data.push(...mockTrafficData.IE);
-  }
   
-  if ((country === 'ALL' || country === 'UK') && road.toUpperCase() === 'M1') {
-    data.push(...mockTrafficData.UK);
-  }
-
+  // Fetch traffic data with smart fallback
+  const fetchResults = await fetchTrafficWithFallback(road, country, town);
+  let data = fetchResults.data;
+  
   // Process LLM extraction if requested
   let enhancedData = data;
   let extractionInfo = null;
@@ -159,10 +212,16 @@ app.get('/traffic', apiKeyAuth, async (req, res) => {
     }
   }
 
+  // Build response summary
   const summary = {
     totalRecords: data.length,
-    sources: [...new Set(data.map(d => d.source))],
-    countries: country === 'ALL' ? ['IE', 'UK'] : [country],
+    sourcesUsed: fetchResults.sourcesUsed,
+    fallbackTriggered: fetchResults.fallbackUsed,
+    countries: country === 'ALL' ? [...new Set(data.map(d => {
+      if (d.source === 'TII-Ireland') return 'IE';
+      if (d.source === 'WebTRIS-UK') return 'UK';
+      return 'Unknown';
+    }))] : [country],
     congestionBreakdown: {
       heavy: data.filter(d => d.congestionLevel === 'heavy').length,
       moderate: data.filter(d => d.congestionLevel === 'moderate').length,
@@ -172,10 +231,15 @@ app.get('/traffic', apiKeyAuth, async (req, res) => {
   };
 
   const response = {
-    query: { road, country, extract: shouldExtract },
+    query: { road, country, town, extract: shouldExtract },
     timestamp: new Date().toISOString(),
     data: enhancedData,
     summary,
+    routing: {
+      sourcesTried: fetchResults.sourcesUsed,
+      fallbackUsed: fetchResults.fallbackUsed,
+      details: fetchResults.details
+    },
     responseTimeMs: Date.now() - startTime
   };
 
@@ -183,43 +247,100 @@ app.get('/traffic', apiKeyAuth, async (req, res) => {
     response.extraction = extractionInfo;
   }
 
+  if (fetchResults.errors.length > 0) {
+    response.errors = fetchResults.errors;
+  }
+
   res.json(response);
 });
 
-app.get('/compare', apiKeyAuth, (req, res) => {
+app.get('/compare', apiKeyAuth, async (req, res) => {
   const { road } = req.query;
   
-  if (!road || road.toUpperCase() !== 'M1') {
-    return res.status(400).json({ error: 'Only M1 supported in demo', example: '/compare?road=M1' });
+  if (!road) {
+    return res.status(400).json({ error: 'Road parameter required', example: '/compare?road=M1' });
   }
 
-  const irelandData = mockTrafficData.IE;
-  const ukData = mockTrafficData.UK;
+  const startTime = Date.now();
+  
+  // Fetch data for both countries
+  const [ieResults, ukResults] = await Promise.all([
+    fetchTIITraffic(road).catch(() => ({ data: [] })),
+    fetchWebTRISTraffic(road).catch(() => ({ data: [] }))
+  ]);
+  
+  const irelandData = ieResults.data || [];
+  const ukData = ukResults.data || [];
 
   res.json({
-    road: 'M1',
+    road: road.toUpperCase(),
     timestamp: new Date().toISOString(),
     comparison: {
       ireland: {
         recordCount: irelandData.length,
-        averageDelayMinutes: 5,
-        congestion: 'light to moderate',
-        sample: irelandData
+        averageDelayMinutes: irelandData.length > 0 
+          ? Math.round(irelandData.reduce((sum, d) => sum + (d.delayMinutes || 0), 0) / irelandData.length * 10) / 10
+          : 0,
+        congestion: irelandData.length > 0
+          ? getDominantCongestion(irelandData)
+          : 'no data',
+        sample: irelandData.slice(0, 3)
       },
       uk: {
         recordCount: ukData.length,
-        averageSpeed: 62,
-        congestion: 'light',
-        sample: ukData
+        averageSpeed: ukData.length > 0
+          ? Math.round(ukData.reduce((sum, d) => sum + (d.averageSpeed || 0), 0) / ukData.length)
+          : 0,
+        congestion: ukData.length > 0
+          ? getDominantCongestion(ukData)
+          : 'no data',
+        sample: ukData.slice(0, 3)
       }
     },
-    insight: 'UK M1 showing better flow than IE M1 at this time'
+    insight: generateInsight(irelandData, ukData),
+    responseTimeMs: Date.now() - startTime
   });
 });
 
 /**
+ * Get dominant congestion level from data array
+ */
+function getDominantCongestion(data) {
+  const counts = { heavy: 0, moderate: 0, light: 0, none: 0 };
+  data.forEach(d => {
+    counts[d.congestionLevel] = (counts[d.congestionLevel] || 0) + 1;
+  });
+  
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  return sorted[0][0];
+}
+
+/**
+ * Generate comparison insight
+ */
+function generateInsight(ieData, ukData) {
+  if (ieData.length === 0 && ukData.length === 0) {
+    return 'No data available for comparison';
+  }
+  if (ieData.length === 0) return 'Only UK data available';
+  if (ukData.length === 0) return 'Only Ireland data available';
+  
+  const ieCongestion = getDominantCongestion(ieData);
+  const ukCongestion = getDominantCongestion(ukData);
+  
+  const levels = { none: 0, light: 1, moderate: 2, heavy: 3 };
+  
+  if (levels[ieCongestion] > levels[ukCongestion]) {
+    return 'Ireland showing higher congestion than UK';
+  } else if (levels[ukCongestion] > levels[ieCongestion]) {
+    return 'UK showing higher congestion than Ireland';
+  } else {
+    return 'Both countries showing similar congestion levels';
+  }
+}
+
+/**
  * POST /extract - LLM-powered segment extraction endpoint
- * Demo endpoint for testing segment extraction on raw traffic text
  */
 app.post('/extract', apiKeyAuth, express.text({ type: '*/*' }), async (req, res) => {
   const startTime = Date.now();
@@ -254,7 +375,7 @@ app.post('/extract', apiKeyAuth, express.text({ type: '*/*' }), async (req, res)
 });
 
 // Also support JSON body for /extract
-app.post('/extract', apiKeyAuth, express.json(), async (req, res) => {
+app.post('/extract-json', apiKeyAuth, express.json(), async (req, res) => {
   const startTime = Date.now();
   
   try {
@@ -288,24 +409,32 @@ app.post('/extract', apiKeyAuth, express.json(), async (req, res) => {
 });
 
 /**
- * GET /cache/stats - Cache statistics
+ * GET /cache/stats - Cache statistics for all adapters
  */
 app.get('/cache/stats', apiKeyAuth, (req, res) => {
-  const stats = getCacheStats();
   res.json({
-    cache: stats,
+    caches: {
+      tii: getTIICacheStats(),
+      webtris: getWebTRISCacheStats(),
+      google: getGoogleCacheStats(),
+      llm: getLLMCacheStats()
+    },
     ttlMinutes: 5,
     timestamp: new Date().toISOString()
   });
 });
 
 /**
- * POST /cache/clear - Clear the cache (admin only)
+ * POST /cache/clear - Clear all caches (admin only)
  */
 app.post('/cache/clear', apiKeyAuth, (req, res) => {
-  clearCache();
+  clearTIICache();
+  clearWebTRISCache();
+  clearGoogleCache();
+  clearLLMCache();
+  
   res.json({
-    message: 'Cache cleared successfully',
+    message: 'All caches cleared successfully',
     timestamp: new Date().toISOString()
   });
 });
@@ -325,8 +454,26 @@ app.get('/llm/status', apiKeyAuth, (req, res) => {
   });
 });
 
+/**
+ * GET /google/stats - Google Maps API usage statistics
+ */
+app.get('/google/stats', apiKeyAuth, (req, res) => {
+  const stats = getGoogleStats();
+  res.json({
+    googleMaps: stats,
+    costOptimization: {
+      cacheEnabled: true,
+      cacheTTL: '5 minutes',
+      fallbackOnly: true,
+      description: 'Google Maps API is only called when free sources (TII, WebTRIS) return no data'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.listen(PORT, () => {
   console.log(`🚦 Traffic API MVP running on port ${PORT}`);
   console.log(`📖 API Documentation: http://localhost:${PORT}/`);
   console.log(`🔑 Demo API Key: demo-key-free`);
+  console.log(`🗺️  Google Maps fallback: ${process.env.GOOGLE_MAPS_API_KEY ? 'Enabled' : 'Disabled (set GOOGLE_MAPS_API_KEY)'}`);
 });
