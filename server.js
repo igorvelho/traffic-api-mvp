@@ -12,7 +12,16 @@ const { fetchRoadTraffic, fetchGoogleMapsTraffic, isGoogleMapsPreferred, getAPIS
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      connectSrc: ["'self'", "https://traffic-api-mvp.onrender.com"],
+    },
+  },
+}));
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
