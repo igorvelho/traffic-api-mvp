@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Traffic API Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 100%);
+            min-height: 100vh;
+            color: #e6e6e6;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            padding: 40px 0;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(90deg, #58a6ff, #3fb950);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .subtitle {
+            color: #8b949e;
+            font-size: 1.1rem;
+        }
+        
+        .api-status {
+            display: inline-block;
+            background: #238636;
+            color: white;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            margin-top: 15px;
+        }
+        
+        .demo-box {
+            background: rgba(22, 27, 34, 0.8);
+            border: 1px solid #30363d;
+            border-radius: 12px;
+            padding: 30px;
+            margin: 30px 0;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #8b949e;
+            font-size: 0.9rem;
+        }
+        
+        input[type="text"], select {
+            width: 100%;
+            padding: 12px 16px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            color: #e6e6e6;
+            font-size: 1rem;
+            transition: border-color 0.2s;
+        }
+        
+        input[type="text"]:focus, select:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+        
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        
+        button {
+            width: 100%;
+            padding: 14px 24px;
+            background: linear-gradient(90deg, #58a6ff, #2f81f7);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(88, 166, 255, 0.3);
+        }
+        
+        button:disabled {
+            background: #30363d;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #8b949e;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 3px solid #30363d;
+            border-top-color: #58a6ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 15px;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .result {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 20px;
+            margin-top: 20px;
+        }
+        
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #30363d;
+        }
+        
+        .result-title {
+            font-size: 1.1rem;
+            color: #58a6ff;
+        }
+        
+        .badge {
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .badge-free {
+            background: #238636;
+            color: white;
+        }
+        
+        .badge-google {
+            background: #d29922;
+            color: #0d1117;
+        }
+        
+        .traffic-card {
+            background: rgba(88, 166, 255, 0.05);
+            border-left: 3px solid #58a6ff;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 0 8px 8px 0;
+        }
+        
+        .traffic-card.none { border-left-color: #3fb950; background: rgba(63, 185, 80, 0.05); }
+        .traffic-card.light { border-left-color: #d29922; background: rgba(210, 153, 34, 0.05); }
+        .traffic-card.moderate { border-left-color: #f85149; background: rgba(248, 81, 73, 0.05); }
+        .traffic-card.heavy { border-left-color: #da3633; background: rgba(218, 54, 51, 0.1); }
+        
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        
+        .card-title {
+            font-weight: 600;
+        }
+        
+        .card-status {
+            font-size: 0.85rem;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: #21262d;
+        }
+        
+        .card-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+            font-size: 0.9rem;
+            color: #8b949e;
+        }
+        
+        .detail-item {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .detail-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .detail-value {
+            color: #e6e6e6;
+            font-weight: 500;
+            margin-top: 2px;
+        }
+        
+        .error {
+            background: rgba(248, 81, 73, 0.1);
+            border: 1px solid #f85149;
+            color: #f85149;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        
+        .quick-tests {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 20px;
+        }
+        
+        .quick-test-btn {
+            padding: 8px 16px;
+            background: #21262d;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #8b949e;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .quick-test-btn:hover {
+            background: #30363d;
+            color: #e6e6e6;
+        }
+        
+        .footer {
+            text-align: center;
+            padding: 40px 0;
+            color: #8b949e;
+            font-size: 0.85rem;
+        }
+        
+        .footer a {
+            color: #58a6ff;
+            text-decoration: none;
+        }
+        
+        @media (max-width: 600px) {
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚦 Traffic API Demo</h1>
+            <p class="subtitle">Real-time traffic data from Ireland, UK & Global roads</p>
+            <span class="api-status">● API Online</span>
+        </header>
+        
+        <div class="demo-box">
+            <h2 style="margin-bottom: 20px;">Check Traffic</h2>
+            
+            <form id="trafficForm">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="road">Road / Street</label>
+                        <input type="text" id="road" placeholder="e.g., M1 or George's Street" required>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="town">Town / City (optional)</label>
+                        <input type="text" id="town" placeholder="e.g., Drogheda">
+                    </div>
+                </div>
+                
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="country">Country</label>
+                        <select id="country" required>
+                            <option value="IE">🇮🇪 Ireland</option>
+                            <option value="UK">🇬🇧 United Kingdom</option>
+                            <option value="BR">🇧🇷 Brazil</option>
+                            <option value="US">🇺🇸 United States</option>
+                            <option value="PT">🇵🇹 Portugal</option>
+                            <option value="OTHER">🌍 Other</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>&nbsp;</label>
+                        <button type="submit" id="submitBtn">Check Traffic</button>
+                    </div>
+                </div>
+            </form>
+            
+            <div class="quick-tests">
+                <span style="color: #8b949e; font-size: 0.85rem;">Quick tests:</span>
+                <button class="quick-test-btn" onclick="quickTest('M1', '', 'IE')">M1 Ireland</button>
+                <button class="quick-test-btn" onclick="quickTest('M1', '', 'UK')">M1 UK</button>
+                <button class="quick-test-btn" onclick="quickTest('George\'s Street', 'Drogheda', 'IE')">George's St, Drogheda</button>
+            </div>
+            
+            <div id="resultContainer"></div>
+        </div>
+        
+        <div class="footer">
+            <p>Powered by <a href="https://github.com/igorvelho/traffic-api-mvp" target="_blank">Traffic API MVP</a></p>
+            <p style="margin-top: 10px; font-size: 0.75rem;">Uses TII (Ireland), WebTRIS (UK), and Google Maps APIs</p>
+        </div>
+    </div>
+    
+    <script>
+        const API_BASE = 'https://traffic-api-mvp.onrender.com';
+        const API_KEY = 'demo-key-free';
+        
+        function quickTest(road, town, country) {
+            document.getElementById('road').value = road;
+            document.getElementById('town').value = town;
+            document.getElementById('country').value = country;
+            checkTraffic();
+        }
+        
+        document.getElementById('trafficForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            checkTraffic();
+        });
+        
+        async function checkTraffic() {
+            const road = document.getElementById('road').value;
+            const town = document.getElementById('town').value;
+            const country = document.getElementById('country').value;
+            const resultContainer = document.getElementById('resultContainer');
+            const submitBtn = document.getElementById('submitBtn');
+            
+            if (!road) return;
+            
+            // Show loading
+            submitBtn.disabled = true;
+            resultContainer.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Fetching traffic data...</p>
+                </div>
+            `;
+            
+            try {
+                let url = `${API_BASE}/traffic?road=${encodeURIComponent(road)}&country=${country}&extract=true`;
+                if (town) {
+                    url += `&town=${encodeURIComponent(town)}`;
+                }
+                
+                const response = await fetch(url, {
+                    headers: {
+                        'x-api-key': API_KEY
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.message || 'Failed to fetch traffic data');
+                }
+                
+                displayResults(data);
+                
+            } catch (error) {
+                resultContainer.innerHTML = `
+                    <div class="error">
+                        ❌ ${error.message}
+                    </div>
+                `;
+            } finally {
+                submitBtn.disabled = false;
+            }
+        }
+        
+        function displayResults(data) {
+            const container = document.getElementById('resultContainer');
+            
+            if (!data.data || data.data.length === 0) {
+                container.innerHTML = `
+                    <div class="result">
+                        <p>No traffic data available for this location.</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            const usedGoogle = data.sourcesUsed?.includes('GoogleMaps');
+            const usedFree = data.sourcesUsed?.some(s => s.includes('TII') || s.includes('WebTRIS'));
+            
+            let html = `
+                <div class="result">
+                    <div class="result-header">
+                        <span class="result-title">📍 ${data.query.road}${data.query.town ? ', ' + data.query.town : ''}</span>
+                        <div>
+                            ${usedFree ? '<span class="badge badge-free">FREE API</span>' : ''}
+                            ${usedGoogle ? '<span class="badge badge-google">GOOGLE MAPS</span>' : ''}
+                        </div>
+                    </div>
+            `;
+            
+            data.data.forEach(record => {
+                const congestion = record.congestionLevel || 'unknown';
+                const cardClass = congestion === 'none' ? 'none' : 
+                                 congestion === 'light' ? 'light' : 
+                                 congestion === 'moderate' ? 'moderate' : 
+                                 congestion === 'heavy' ? 'heavy' : '';
+                
+                const statusEmoji = congestion === 'none' ? '✅' :
+                                   congestion === 'light' ? '⚠️' :
+                                   congestion === 'moderate' ? '🔶' :
+                                   congestion === 'heavy' ? '🔴' : '❓';
+                
+                html += `
+                    <div class="traffic-card ${cardClass}">
+                        <div class="card-header">
+                            <span class="card-title">${record.source}</span>
+                            <span class="card-status">${statusEmoji} ${congestion.toUpperCase()}</span>
+                        </div>
+                        
+                        ${record.humanReadable ? `<p style="margin-bottom: 10px;">${record.humanReadable}</p>` : ''}
+                        
+                        <div class="card-details">
+                            ${record.distanceKm ? `
+                                <div class="detail-item">
+                                    <span class="detail-label">Distance</span>
+                                    <span class="detail-value">${record.distanceKm} km</span>
+                                </div>
+                            ` : ''}
+                            
+                            ${record.durationMinutes !== undefined ? `
+                                <div class="detail-item">
+                                    <span class="detail-label">Duration</span>
+                                    <span class="detail-value">${record.durationMinutes} min</span>
+                                </div>
+                            ` : ''}
+                            
+                            ${record.delayMinutes ? `
+                                <div class="detail-item">
+                                    <span class="detail-label">Delay</span>
+                                    <span class="detail-value" style="color: #f85149;">+${record.delayMinutes} min</span>
+                                </div>
+                            ` : ''}
+                            
+                            ${record.averageSpeed ? `
+                                <div class="detail-item">
+                                    <span class="detail-label">Speed</span>
+                                    <span class="detail-value">${record.averageSpeed} km/h</span>
+                                </div>
+                            ` : ''}
+                            
+                            ${record.vehicleFlow ? `
+                                <div class="detail-item">
+                                    <span class="detail-label">Vehicle Flow</span>
+                                    <span class="detail-value">${record.vehicleFlow} veh/h</span>
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            html += '</div>';
+            container.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
