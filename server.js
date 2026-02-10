@@ -12,6 +12,9 @@ const { fetchRoadTraffic, fetchGoogleMapsTraffic, isGoogleMapsPreferred, getAPIS
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trust proxy for rate-limit to work correctly behind Render's load balancer
+app.set('trust proxy', 1);
+
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {

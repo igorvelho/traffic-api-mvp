@@ -247,6 +247,7 @@ async function callLLM(prompt) {
 
 /**
  * Parse LLM response into structured object
+ * Handles complete JSON, partial JSON, and extracts whatever is available
  */
 function parseLLMResponse(response) {
   try {
@@ -264,24 +265,68 @@ function parseLLMResponse(response) {
       jsonStr = jsonMatch[0];
     }
     
-    const parsed = JSON.parse(jsonStr);
-    
-    // Validate and normalize fields
-    return {
-      road: parsed.road || null,
-      direction: parsed.direction || null,
-      segment: parsed.segment || null,
-      landmark: parsed.landmark || null,
-      congestion: parsed.congestion || null,
-      speed: parsed.speed || null,
-      incidentType: parsed.incidentType || null,
-      rawExtracted: true
-    };
+    // Try to parse complete JSON first
+    try {
+      const parsed = JSON.parse(jsonStr);
+      return {
+        road: parsed.road || null,
+        direction: parsed.direction || null,
+        segment: parsed.segment || null,
+        landmark: parsed.landmark || null,
+        congestion: parsed.congestion || null,
+        speed: parsed.speed || null,
+        incidentType: parsed.incidentType || null,
+        rawExtracted: true
+      };
+    } catch (parseError) {
+      // If JSON is incomplete/truncated, try to extract partial data
+      console.log('JSON parse failed, attempting partial extraction...');
+      
+      const extracted = {
+        road: extractField(jsonStr, 'road'),
+        direction: extractField(jsonStr, 'direction'),
+        segment: extractField(jsonStr, 'segment'),
+        landmark: extractField(jsonStr, 'landmark'),
+        congestion: extractField(jsonStr, 'congestion'),
+        speed: extractField(jsonStr, 'speed'),
+        incidentType: extractField(jsonStr, 'incidentType'),
+        rawExtracted: true,
+        partial: true
+      };
+      
+      // Only return if we got at least one field
+      if (Object.values(extracted).some(v => v !== null && v !== true && v !== false)) {
+        return extracted;
+      }
+      
+      throw parseError;
+    }
   } catch (error) {
     console.error('Failed to parse LLM response:', error.message);
     console.log('Raw response:', response.substring(0, 500));
     return null;
   }
+}
+
+/**
+ * Extract a field value from partial/incomplete JSON string
+ */
+function extractField(jsonStr, fieldName) {
+  const regex = new RegExp(`"${fieldName}"\\s*:\\s*(?:"([^"]*)"|(null|true|false)|(-?\\d+(?:\\.\\d+)?))`, 'i');
+  const match = jsonStr.match(regex);
+  
+  if (!match) return null;
+  
+  // Return string value, boolean, number, or null
+  if (match[1] !== undefined) return match[1]; // String value
+  if (match[2] !== undefined) {
+    if (match[2] === 'null') return null;
+    if (match[2] === 'true') return true;
+    if (match[2] === 'false') return false;
+  }
+  if (match[3] !== undefined) return parseFloat(match[3]); // Number
+  
+  return null;
 }
 
 /**
