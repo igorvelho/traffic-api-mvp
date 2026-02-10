@@ -12,8 +12,28 @@ const { fetchRoadTraffic, fetchGoogleMapsTraffic, isGoogleMapsPreferred, getAPIS
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Debug mode
+const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
+const debugLog = (...args) => {
+  if (DEBUG) {
+    console.log('[DEBUG]', ...args);
+  }
+};
+
 // Trust proxy for rate-limit to work correctly behind Render's load balancer
 app.set('trust proxy', 1);
+
+// Debug logging middleware
+app.use((req, res, next) => {
+  if (DEBUG) {
+    console.log(`[DEBUG] ${new Date().toISOString()} ${req.method} ${req.path}`);
+    console.log('[DEBUG] Headers:', JSON.stringify(req.headers, null, 2));
+    if (req.body && Object.keys(req.body).length > 0) {
+      console.log('[DEBUG] Body:', JSON.stringify(req.body, null, 2));
+    }
+  }
+  next();
+});
 
 app.use(helmet({
   contentSecurityPolicy: {

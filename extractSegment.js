@@ -184,6 +184,7 @@ Respond with ONLY the JSON object, no markdown, no explanation, no code blocks.`
  */
 async function callLLM(prompt) {
   const llmConfig = getLLMConfig();
+  const DEBUG = process.env.DEBUG === 'true' || process.env.DEBUG === '1';
   
   if (!llmConfig.enabled) {
     throw new Error(`LLM not configured: ${llmConfig.error}`);
@@ -213,6 +214,15 @@ async function callLLM(prompt) {
     };
   }
   
+  // Debug logging
+  if (DEBUG) {
+    console.log('[DEBUG] LLM Request:');
+    console.log('[DEBUG] Provider:', provider);
+    console.log('[DEBUG] Model:', model);
+    console.log('[DEBUG] URL:', axiosConfig.url);
+    console.log('[DEBUG] Request body:', JSON.stringify(request.data, null, 2));
+  }
+  
   console.log(`Calling ${provider} LLM API...`);
   const startTime = Date.now();
   
@@ -221,10 +231,34 @@ async function callLLM(prompt) {
     const duration = Date.now() - startTime;
     console.log(`LLM call completed in ${duration}ms`);
     
+    // Debug logging
+    if (DEBUG) {
+      console.log('[DEBUG] LLM Response:');
+      console.log('[DEBUG] Status:', response.status);
+      console.log('[DEBUG] Response data:', JSON.stringify(response.data, null, 2));
+    }
+    
     const text = config.parseResponse(response);
+    
+    if (DEBUG) {
+      console.log('[DEBUG] Parsed text:', text.substring(0, 500));
+    }
+    
     return text;
   } catch (error) {
     const duration = Date.now() - startTime;
+    
+    // Debug logging for errors
+    if (DEBUG) {
+      console.log('[DEBUG] LLM Error:');
+      console.log('[DEBUG] Duration:', duration, 'ms');
+      if (error.response) {
+        console.log('[DEBUG] Status:', error.response.status);
+        console.log('[DEBUG] Error data:', JSON.stringify(error.response.data, null, 2));
+      } else {
+        console.log('[DEBUG] Error:', error.message);
+      }
+    }
     
     if (error.response) {
       // API returned an error response
