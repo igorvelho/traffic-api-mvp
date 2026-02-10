@@ -30,7 +30,8 @@ const PROVIDER_CONFIGS = {
         }],
         generationConfig: {
           temperature: 0.1,
-          maxOutputTokens: 500
+          maxOutputTokens: 1024,
+          responseMimeType: 'application/json'
         }
       }
     }),
