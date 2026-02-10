@@ -296,6 +296,12 @@
             <h2 style="margin-bottom: 20px;">Check Traffic</h2>
             
             <form id="trafficForm">
+                <div class="form-group">
+                    <label for="apiKey">API Key</label>
+                    <input type="text" id="apiKey" placeholder="Enter your API key (or use demo-key-free)" value="demo-key-free" required>
+                    <small style="color: #8b949e; font-size: 0.75rem; margin-top: 4px; display: block;">Default: demo-key-free. Use your own key for production access.</small>
+                </div>
+                
                 <div class="form-row">
                     <div class="form-group">
                         <label for="road">Road / Street</label>
@@ -346,7 +352,10 @@
     
     <script>
         const API_BASE = 'https://traffic-api-mvp.onrender.com';
-        const API_KEY = 'demo-key-free';
+        
+        function getApiKey() {
+            return document.getElementById('apiKey').value.trim() || 'demo-key-free';
+        }
         
         function quickTest(road, town, country) {
             document.getElementById('road').value = road;
@@ -386,7 +395,7 @@
                 
                 const response = await fetch(url, {
                     headers: {
-                        'x-api-key': API_KEY
+                        'x-api-key': getApiKey()
                     }
                 });
                 
