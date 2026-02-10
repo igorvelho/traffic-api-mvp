@@ -32,6 +32,18 @@ curl -H "x-api-key: demo-key-free" "http://localhost:3000/traffic?road=M1&countr
 
 # All countries
 curl -H "x-api-key: demo-key-free" "http://localhost:3000/traffic?road=M1"
+
+# With LLM segment extraction (adds human-readable location info)
+curl -H "x-api-key: demo-key-free" "http://localhost:3000/traffic?road=M1&extract=true"
+```
+
+### 2a. Extract Segments from Raw Text (LLM Demo)
+```bash
+# Extract structured location data from raw traffic descriptions
+curl -X POST -H "x-api-key: demo-key-free" \
+  -H "Content-Type: text/plain" \
+  -d "Site 19446, M1, lat: 52.198, lon: -0.915, speed: 48, congestion: moderate" \
+  "http://localhost:3000/extract"
 ```
 
 ### 3. Compare Across Countries
@@ -52,6 +64,7 @@ curl http://localhost:3000/sources
 
 ## Example Response
 
+### Standard Response
 ```json
 {
   "query": { "road": "M1", "country": "ALL" },
@@ -89,6 +102,78 @@ curl http://localhost:3000/sources
     }
   },
   "responseTimeMs": 450
+}
+```
+
+### With Segment Extraction (`?extract=true`)
+```json
+{
+  "query": { "road": "M1", "country": "ALL", "extract": true },
+  "timestamp": "2026-02-10T17:50:00.000Z",
+  "data": [
+    {
+      "source": "WebTRIS-UK",
+      "siteId": "19446",
+      "road": "M1",
+      "direction": "Northbound",
+      "location": { "lat": 52.198, "lon": -0.915 },
+      "vehicleFlow": 2450,
+      "averageSpeed": 65,
+      "congestionLevel": "light",
+      "timestamp": "2026-02-10T17:45:00.000Z",
+      "segment": {
+        "road": "M1",
+        "direction": "Northbound",
+        "segment": "Near Junction 14",
+        "landmark": "Milton Keynes area",
+        "congestion": "light",
+        "speed": "65 km/h",
+        "incidentType": null,
+        "humanReadable": "M1 Northbound - Near Junction 14 (Milton Keynes area) [light congestion] at 65 km/h",
+        "rawExtracted": true,
+        "cached": false
+      },
+      "humanReadable": "M1 Northbound - Near Junction 14 (Milton Keynes area) [light congestion] at 65 km/h"
+    }
+  ],
+  "summary": {
+    "totalRecords": 1,
+    "sources": ["WebTRIS-UK"],
+    "countries": ["UK"],
+    "congestionBreakdown": {
+      "heavy": 0,
+      "moderate": 0,
+      "light": 1,
+      "none": 0
+    }
+  },
+  "extraction": {
+    "processed": 1,
+    "extractionTimeMs": 850,
+    "cached": 0
+  },
+  "responseTimeMs": 1250
+}
+```
+
+### Segment Extraction Demo Response
+```json
+{
+  "input": "Site 19446, M1, lat: 52.198, lon: -0.915, speed: 48, congestion: moderate",
+  "extracted": {
+    "road": "M1",
+    "direction": "Northbound",
+    "segment": "Junction 14 area",
+    "landmark": "Near Milton Keynes",
+    "congestion": "moderate",
+    "speed": "48 km/h",
+    "incidentType": null,
+    "humanReadable": "M1 Northbound - Junction 14 area (Near Milton Keynes) [moderate congestion] at 48 km/h",
+    "rawExtracted": true,
+    "cached": false
+  },
+  "processingTimeMs": 920,
+  "timestamp": "2026-02-10T17:50:00.000Z"
 }
 ```
 
@@ -150,12 +235,45 @@ curl http://localhost:3000/sources
 - **Infrastructure**: ~$200/mo (handles 10M+ requests)
 - **Margin**: 85%+ at scale
 
+## 🧠 LLM Segment Extraction
+
+The Traffic API now includes AI-powered segment extraction using Kimi (moonshot/kimi-k2.5) to transform raw traffic data into human-readable location descriptions.
+
+### Features
+- **Automatic Location Parsing**: Extracts road names, junction numbers, landmarks
+- **Direction Detection**: Identifies Northbound/Southbound/Eastbound/Westbound
+- **Congestion Context**: Adds human-readable descriptions of traffic conditions
+- **Smart Caching**: 5-minute TTL cache prevents redundant LLM calls
+- **Graceful Fallback**: Returns raw data if LLM processing fails
+
+### How It Works
+1. Raw traffic data is received from TII or WebTRIS
+2. Data is sent to Kimi LLM with a structured extraction prompt
+3. LLM returns structured JSON with location details
+4. Results are cached and added to the response
+
+### Cache Management
+```bash
+# Check cache statistics
+curl -H "x-api-key: demo-key-free" "http://localhost:3000/cache/stats"
+
+# Clear the cache
+curl -X POST -H "x-api-key: demo-key-free" "http://localhost:3000/cache/clear"
+```
+
+### Performance
+- First request: ~1-2 seconds (LLM processing)
+- Cached requests: ~50ms (instant)
+- Batch processing: Parallel LLM calls for multiple records
+
 ## Roadmap
 
 ### Phase 1 (MVP) ✅
 - [x] IE + UK data sources
 - [x] Basic API with auth
 - [x] Rate limiting
+- [x] **LLM-powered segment extraction** 🆕
+- [x] **Human-readable location descriptions** 🆕
 
 ### Phase 2 (Expansion)
 - [ ] Scotland (Traffic Scotland)
