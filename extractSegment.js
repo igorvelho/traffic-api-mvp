@@ -1,23 +1,118 @@
 /**
  * LLM-powered segment extraction module for traffic data
  * Extracts structured location/segment information from raw traffic descriptions
+ * 
+ * Supports multiple LLM providers: Gemini (default), OpenAI, Moonshot/Kimi
+ * Configure via environment variables:
+ *   - LLM_PROVIDER: 'gemini', 'openai', 'kimi' (default: 'gemini')
+ *   - LLM_API_KEY: Your API key for the selected provider
+ *   - LLM_MODEL: Model name (optional, uses provider defaults)
  */
 
-const { exec } = require('child_process');
-const { promisify } = require('util');
-const execAsync = promisify(exec);
+const axios = require('axios');
 
 // Simple in-memory cache for LLM responses
 // TTL: 5 minutes (300000 ms)
 const cache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
+// Provider configurations
+const PROVIDER_CONFIGS = {
+  gemini: {
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
+    defaultModel: 'gemini-1.5-flash',
+    authType: 'query', // API key in query param
+    buildRequest: (prompt, model) => ({
+      url: `/${model}:generateContent`,
+      data: {
+        contents: [{
+          parts: [{ text: prompt }]
+        }],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 500
+        }
+      }
+    }),
+    parseResponse: (response) => {
+      const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error('Invalid Gemini response format');
+      return text;
+    }
+  },
+  openai: {
+    baseUrl: 'https://api.openai.com/v1',
+    defaultModel: 'gpt-4o-mini',
+    authType: 'header', // API key in Authorization header
+    buildRequest: (prompt, model) => ({
+      url: '/chat/completions',
+      data: {
+        model: model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+        max_tokens: 500
+      }
+    }),
+    parseResponse: (response) => {
+      const text = response.data?.choices?.[0]?.message?.content;
+      if (!text) throw new Error('Invalid OpenAI response format');
+      return text;
+    }
+  },
+  kimi: {
+    baseUrl: 'https://api.moonshot.cn/v1',
+    defaultModel: 'moonshot-v1-8k',
+    authType: 'header',
+    buildRequest: (prompt, model) => ({
+      url: '/chat/completions',
+      data: {
+        model: model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.1,
+        max_tokens: 500
+      }
+    }),
+    parseResponse: (response) => {
+      const text = response.data?.choices?.[0]?.message?.content;
+      if (!text) throw new Error('Invalid Kimi response format');
+      return text;
+    }
+  }
+};
+
+/**
+ * Get LLM configuration from environment
+ */
+function getLLMConfig() {
+  const provider = process.env.LLM_PROVIDER?.toLowerCase() || 'gemini';
+  const apiKey = process.env.LLM_API_KEY;
+  
+  if (!apiKey) {
+    return { enabled: false, provider, error: 'LLM_API_KEY not set' };
+  }
+  
+  if (!PROVIDER_CONFIGS[provider]) {
+    return { enabled: false, provider, error: `Unknown provider: ${provider}` };
+  }
+  
+  const config = PROVIDER_CONFIGS[provider];
+  const model = process.env.LLM_MODEL || config.defaultModel;
+  
+  return {
+    enabled: true,
+    provider,
+    apiKey,
+    model,
+    baseUrl: config.baseUrl,
+    config
+  };
+}
+
 /**
  * Generate cache key from input data
  */
 function getCacheKey(data) {
   const str = typeof data === 'string' ? data : JSON.stringify(data);
-  // Simple hash for caching
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
     const char = str.charCodeAt(i);
@@ -51,34 +146,102 @@ function buildPrompt(trafficData) {
     : JSON.stringify(trafficData, null, 2);
 
   return `Extract structured traffic segment information from the following data. 
-Return ONLY a valid JSON object with these fields:
-- road: The road name (e.g., "M1", "M50", "N7")
-- direction: Direction of travel (e.g., "Northbound", "Southbound", "Eastbound", "Westbound")
-- segment: Description of the road segment (e.g., "J6 Balbriggan to J7 Drogheda", "between Junction 14 and 15")
-- landmark: Specific landmarks or nearby locations if mentioned (e.g., "Near Balbriggan exit", "At Dublin Airport")
-- congestion: Congestion level if mentioned (none, light, moderate, heavy, severe)
-- speed: Speed information if available (with units)
-- incidentType: Type of incident if mentioned (e.g., "collision", "breakdown", "roadworks")
+
+The data contains traffic information from a road monitoring system. Your task is to:
+1. Identify the road name (e.g., "M1", "M50", "A1")
+2. Determine the direction of travel (Northbound, Southbound, Eastbound, Westbound)
+3. Describe the specific road segment or junction area if coordinates are provided
+4. Identify any nearby landmarks, cities, or notable locations
+5. Note the congestion level (none, light, moderate, heavy, severe)
+6. Include speed information if available
+7. Identify incident types (collision, breakdown, roadworks, etc.)
+
+For coordinates (lat/lon):
+- Use your knowledge of geography to identify the nearest major city, town, or landmark
+- Estimate the closest motorway junction or exit if applicable
+- Provide context about the location (e.g., "near Milton Keynes", "south of Dublin")
 
 Traffic Data:
 ${dataStr}
 
-Respond with ONLY the JSON object, no markdown, no explanation.`;
+Return ONLY a valid JSON object with these fields:
+{
+  "road": "road name like M1, M50, A1",
+  "direction": "Northbound/Southbound/Eastbound/Westbound or null",
+  "segment": "description of junction or road segment, or null",
+  "landmark": "nearby city, town, or landmark, or null",
+  "congestion": "none/light/moderate/heavy/severe or null",
+  "speed": "speed with units or null",
+  "incidentType": "type of incident or null"
+}
+
+Respond with ONLY the JSON object, no markdown, no explanation, no code blocks.`;
 }
 
 /**
- * Call Kimi LLM via OpenClaw using sessions_spawn
+ * Call LLM API with configured provider
  */
 async function callLLM(prompt) {
+  const llmConfig = getLLMConfig();
+  
+  if (!llmConfig.enabled) {
+    throw new Error(`LLM not configured: ${llmConfig.error}`);
+  }
+  
+  const { provider, apiKey, model, baseUrl, config } = llmConfig;
+  const request = config.buildRequest(prompt, model);
+  
+  // Build request configuration
+  const axiosConfig = {
+    method: 'POST',
+    url: `${baseUrl}${request.url}`,
+    data: request.data,
+    timeout: 30000 // 30 second timeout
+  };
+  
+  // Add authentication
+  if (config.authType === 'query') {
+    // For Gemini, API key goes in query param
+    const separator = request.url.includes('?') ? '&' : '?';
+    axiosConfig.url = `${axiosConfig.url}${separator}key=${apiKey}`;
+  } else {
+    // For OpenAI and Kimi, API key goes in header
+    axiosConfig.headers = {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    };
+  }
+  
+  console.log(`Calling ${provider} LLM API...`);
+  const startTime = Date.now();
+  
   try {
-    // For now, use a simple rule-based extraction as fallback
-    // since we can't easily spawn sessions from within a running Node app
-    // In production, this would call an LLM API endpoint
-    console.log('LLM extraction not available in demo mode, using fallback...');
-    throw new Error('LLM not configured - using fallback extraction');
+    const response = await axios(axiosConfig);
+    const duration = Date.now() - startTime;
+    console.log(`LLM call completed in ${duration}ms`);
+    
+    const text = config.parseResponse(response);
+    return text;
   } catch (error) {
-    console.error('LLM call failed:', error.message);
-    throw error;
+    const duration = Date.now() - startTime;
+    
+    if (error.response) {
+      // API returned an error response
+      const status = error.response.status;
+      const errorData = error.response.data;
+      
+      if (status === 401 || status === 403) {
+        throw new Error(`LLM API authentication failed: Invalid API key for ${provider}`);
+      } else if (status === 429) {
+        throw new Error(`LLM API rate limit exceeded for ${provider}`);
+      } else {
+        throw new Error(`LLM API error (${status}): ${JSON.stringify(errorData)}`);
+      }
+    } else if (error.code === 'ECONNABORTED') {
+      throw new Error(`LLM API timeout after 30s`);
+    } else {
+      throw new Error(`LLM API call failed: ${error.message}`);
+    }
   }
 }
 
@@ -103,7 +266,7 @@ function parseLLMResponse(response) {
     
     const parsed = JSON.parse(jsonStr);
     
-    // Validate required fields
+    // Validate and normalize fields
     return {
       road: parsed.road || null,
       direction: parsed.direction || null,
@@ -116,7 +279,7 @@ function parseLLMResponse(response) {
     };
   } catch (error) {
     console.error('Failed to parse LLM response:', error.message);
-    console.log('Raw response:', response);
+    console.log('Raw response:', response.substring(0, 500));
     return null;
   }
 }
@@ -184,7 +347,7 @@ async function extractSegment(trafficData, options = {}) {
     const extracted = parseLLMResponse(llmResponse);
     
     if (!extracted) {
-      throw new Error('Failed to extract segment data');
+      throw new Error('Failed to extract segment data from LLM response');
     }
     
     // Generate human-readable summary
@@ -193,7 +356,8 @@ async function extractSegment(trafficData, options = {}) {
     const result = {
       ...extracted,
       humanReadable,
-      cached: false
+      cached: false,
+      llmProvider: getLLMConfig().provider
     };
     
     // Cache the result
@@ -207,7 +371,7 @@ async function extractSegment(trafficData, options = {}) {
     return result;
     
   } catch (error) {
-    console.error('Segment extraction failed:', error.message);
+    console.error('LLM segment extraction failed:', error.message);
     
     if (fallback) {
       // Return a fallback result with basic info
@@ -224,132 +388,55 @@ async function extractSegment(trafficData, options = {}) {
 }
 
 /**
- * Simple coordinate-based segment lookup for M1 (Ireland and UK)
- * Maps approximate coordinates to junctions/segments
- */
-function getSegmentFromCoordinates(lat, lon, road) {
-  // Detect if this is UK or Ireland based on longitude
-  // Ireland: roughly -6 to -10 longitude
-  // UK: roughly -0.5 to -2 longitude for M1 area
-  const isIreland = lon < -5;
-  const isUK = lon > -2;
-  
-  let segments = [];
-  
-  if (isIreland) {
-    // M1 Ireland approximate junction coordinates (south to north)
-    segments = [
-      { junction: 'J1', name: 'M50/M1 Interchange', lat: 53.4, lon: -6.25, segment: 'M50 Interchange area' },
-      { junction: 'J2', name: 'Dublin Airport', lat: 53.42, lon: -6.24, segment: 'Dublin Airport area' },
-      { junction: 'J3', name: 'Swords', lat: 53.45, lon: -6.22, segment: 'Swords area' },
-      { junction: 'J4', name: 'Donabate', lat: 53.48, lon: -6.2, segment: 'Donabate area' },
-      { junction: 'J5', name: 'Balbriggan', lat: 53.61, lon: -6.18, segment: 'Balbriggan area' },
-      { junction: 'J6', name: 'Balbriggan North', lat: 53.63, lon: -6.17, segment: 'Balbriggan North area' },
-      { junction: 'J7', name: 'Julianstown', lat: 53.67, lon: -6.28, segment: 'Julianstown area' },
-      { junction: 'J8', name: 'Duleek', lat: 53.65, lon: -6.42, segment: 'Duleek area' },
-      { junction: 'J9', name: 'Drogheda South', lat: 53.69, lon: -6.35, segment: 'Drogheda South area' },
-      { junction: 'J10', name: 'Drogheda North', lat: 53.72, lon: -6.34, segment: 'Drogheda North area' },
-      { junction: 'J11', name: 'Drogheda Bypass', lat: 53.74, lon: -6.33, segment: 'Drogheda Bypass area' },
-      { junction: 'J12', name: 'Dunleer', lat: 53.78, lon: -6.32, segment: 'Dunleer area' },
-      { junction: 'J14', name: 'Dundalk South', lat: 53.96, lon: -6.38, segment: 'Dundalk South area' },
-      { junction: 'J16', name: 'Dundalk North', lat: 54.01, lon: -6.4, segment: 'Dundalk North area' }
-    ];
-  } else if (isUK) {
-    // M1 UK approximate junction coordinates (near the test data coordinates)
-    // The test data shows coordinates around lat: 52.19, lon: -0.91 (near Milton Keynes area)
-    segments = [
-      { junction: 'J11', name: 'Dunton', lat: 52.15, lon: -0.85, segment: 'North of Luton' },
-      { junction: 'J12', name: 'Flitwick', lat: 52.0, lon: -0.5, segment: 'Flitwick area' },
-      { junction: 'J13', name: 'Bedford', lat: 52.15, lon: -0.5, segment: 'Bedford area' },
-      { junction: 'J14', name: 'Newport Pagnell', lat: 52.08, lon: -0.73, segment: 'Newport Pagnell area' },
-      { junction: 'J15', name: 'Newport Pagnell North', lat: 52.1, lon: -0.75, segment: 'North of Newport Pagnell' },
-      // The test coordinates (~52.19, -0.91) are in this area:
-      { junction: 'J16', name: 'Milton Keynes', lat: 52.2, lon: -0.9, segment: 'Milton Keynes area' },
-      { junction: 'J17', name: 'Milton Keynes North', lat: 52.25, lon: -0.95, segment: 'North Milton Keynes' },
-      { junction: 'J18', name: 'Crick', lat: 52.35, lon: -1.1, segment: 'Crick area' },
-      { junction: 'J19', name: 'Catthorpe', lat: 52.4, lon: -1.2, segment: 'Catthorpe Interchange' }
-    ];
-  }
-  
-  if (road !== 'M1' || segments.length === 0) {
-    return { segment: null, landmark: null, country: isIreland ? 'IE' : (isUK ? 'UK' : 'Unknown') };
-  }
-  
-  // Find closest junction
-  let closest = null;
-  let minDistance = Infinity;
-  
-  for (const seg of segments) {
-    const distance = Math.sqrt(
-      Math.pow(lat - seg.lat, 2) + Math.pow(lon - seg.lon, 2)
-    );
-    if (distance < minDistance) {
-      minDistance = distance;
-      closest = seg;
-    }
-  }
-  
-  // Only return if within reasonable distance (0.5 degrees ~ 50km)
-  if (closest && minDistance < 0.5) {
-    return {
-      segment: `${closest.junction} ${closest.name}`,
-      landmark: closest.segment,
-      country: isIreland ? 'IE' : 'UK'
-    };
-  }
-  
-  return { segment: null, landmark: null, country: isIreland ? 'IE' : (isUK ? 'UK' : 'Unknown') };
-}
-
-/**
  * Create fallback result when LLM fails
+ * Uses simple pattern matching without hardcoded coordinates
  */
 function createFallbackResult(trafficData) {
   if (typeof trafficData === 'string') {
-    // Try to extract basic info from text
-    const roadMatch = trafficData.match(/\b(M\d+|N\d+|A\d+)\b/i);
-    const directionMatch = trafficData.match(/\b(Northbound|Southbound|Eastbound|Westbound)\b/i);
+    // Try to extract basic info from text using patterns
+    const roadMatch = trafficData.match(/\b(M\d+|N\d+|A\d+|E\d+|R\d+)\b/i);
+    const directionMatch = trafficData.match(/\b(Northbound|Southbound|Eastbound|Westbound|North|South|East|West)\b/i);
     const congestionMatch = trafficData.match(/\b(none|light|moderate|heavy|severe)\s+(traffic|congestion)\b/i);
-    const incidentMatch = trafficData.match(/\b(collision|crash|accident|breakdown|roadworks)\b/i);
+    const incidentMatch = trafficData.match(/\b(collision|crash|accident|breakdown|roadworks|construction|incident)\b/i);
+    // Better speed pattern: look for speed: or at before the number, or km/h/mph after
+    const speedMatch = trafficData.match(/(?:speed[:\s]+|at\s+)(\d+)\s*(km\/h|mph|kph)?/i) || 
+                       trafficData.match(/(\d+)\s*(km\/h|mph|kph)/i);
     
-    return {
+    const extracted = {
       road: roadMatch ? roadMatch[1].toUpperCase() : null,
       direction: directionMatch ? directionMatch[1] : null,
       segment: null,
       landmark: null,
       congestion: congestionMatch ? congestionMatch[1] : null,
-      speed: null,
+      speed: speedMatch ? `${speedMatch[1]} ${speedMatch[2] || 'km/h'}` : null,
       incidentType: incidentMatch ? incidentMatch[1] : null,
-      humanReadable: trafficData.substring(0, 100),
       rawExtracted: false
+    };
+    
+    return {
+      ...extracted,
+      humanReadable: generateHumanReadable(extracted, trafficData)
     };
   }
   
-  // Extract from object with coordinate-based segment lookup
-  const lat = trafficData.location?.lat;
-  const lon = trafficData.location?.lon;
-  const road = trafficData.road;
+  // Extract from object
+  const lat = trafficData.location?.lat || trafficData.lat;
+  const lon = trafficData.location?.lon || trafficData.lon;
   
-  let segmentInfo = { segment: null, landmark: null };
-  if (lat && lon && road) {
-    segmentInfo = getSegmentFromCoordinates(lat, lon, road);
-  }
-  
-  const congestion = trafficData.congestionLevel || trafficData.congestion;
-  const speed = trafficData.averageSpeed;
-  
-  return {
+  const extracted = {
     road: trafficData.road || null,
     direction: trafficData.direction || null,
-    segment: segmentInfo.segment || (trafficData.location ? `Lat: ${trafficData.location.lat}, Lon: ${trafficData.location.lon}` : null),
-    landmark: segmentInfo.landmark || null,
-    congestion: trafficData.congestionLevel || null,
+    segment: lat && lon ? `Coordinates: ${lat.toFixed(3)}, ${lon.toFixed(3)}` : null,
+    landmark: null,
+    congestion: trafficData.congestionLevel || trafficData.congestion || null,
     speed: trafficData.averageSpeed ? `${trafficData.averageSpeed} km/h` : null,
-    incidentType: null,
-    humanReadable: segmentInfo.segment 
-      ? `${trafficData.road || 'Unknown road'} ${trafficData.direction || ''} at ${segmentInfo.segment}`.trim()
-      : `${trafficData.road || 'Unknown road'} ${trafficData.direction || ''}`.trim() || 'Location information unavailable',
+    incidentType: trafficData.incidentType || null,
     rawExtracted: false
+  };
+  
+  return {
+    ...extracted,
+    humanReadable: generateHumanReadable(extracted, trafficData)
   };
 }
 
@@ -388,9 +475,10 @@ async function extractSegmentsBatch(records, options = {}) {
  * Get cache statistics
  */
 function getCacheStats() {
+  cleanCache(); // Clean before reporting
   return {
     size: cache.size,
-    entries: Array.from(cache.keys())
+    entries: Array.from(cache.keys()).slice(0, 10) // Limit to first 10 for readability
   };
 }
 
@@ -402,9 +490,23 @@ function clearCache() {
   console.log('Segment extraction cache cleared');
 }
 
+/**
+ * Get LLM configuration status
+ */
+function getLLMStatus() {
+  const config = getLLMConfig();
+  return {
+    enabled: config.enabled,
+    provider: config.provider,
+    model: config.model,
+    error: config.error || null
+  };
+}
+
 module.exports = {
   extractSegment,
   extractSegmentsBatch,
   getCacheStats,
-  clearCache
+  clearCache,
+  getLLMStatus
 };

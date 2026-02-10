@@ -8,6 +8,10 @@ A global traffic data aggregator API that normalizes traffic data from multiple 
 # Install dependencies
 npm install
 
+# Configure environment (optional - for LLM features)
+cp .env.example .env
+# Edit .env and add your LLM_API_KEY for segment extraction
+
 # Start the server
 npm start
 
@@ -237,20 +241,48 @@ curl http://localhost:3000/sources
 
 ## 🧠 LLM Segment Extraction
 
-The Traffic API now includes AI-powered segment extraction using Kimi (moonshot/kimi-k2.5) to transform raw traffic data into human-readable location descriptions.
+The Traffic API includes AI-powered segment extraction using LLMs (Gemini, OpenAI, or Kimi) to transform raw traffic data into human-readable location descriptions. No hardcoded coordinates needed - the LLM uses its geographic knowledge to identify locations from coordinates.
 
 ### Features
-- **Automatic Location Parsing**: Extracts road names, junction numbers, landmarks
+- **Automatic Location Parsing**: Extracts road names, junction numbers, landmarks from coordinates
 - **Direction Detection**: Identifies Northbound/Southbound/Eastbound/Westbound
 - **Congestion Context**: Adds human-readable descriptions of traffic conditions
 - **Smart Caching**: 5-minute TTL cache prevents redundant LLM calls
-- **Graceful Fallback**: Returns raw data if LLM processing fails
+- **Graceful Fallback**: Returns raw data with pattern matching if LLM unavailable
+- **Multi-Provider Support**: Works with Gemini (free), OpenAI, or Kimi
 
 ### How It Works
 1. Raw traffic data is received from TII or WebTRIS
-2. Data is sent to Kimi LLM with a structured extraction prompt
-3. LLM returns structured JSON with location details
-4. Results are cached and added to the response
+2. Data is sent to configured LLM API with a structured extraction prompt
+3. LLM uses its geographic knowledge to identify locations from coordinates
+4. Returns structured JSON with location details (road, junction, landmarks)
+5. Results are cached and added to the response
+
+### Configuration
+
+Create a `.env` file to enable LLM extraction:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and add your API key:
+
+```bash
+# Option 1: Gemini (recommended, free tier: 60 req/min)
+LLM_PROVIDER=gemini
+LLM_API_KEY=your_gemini_api_key
+
+# Option 2: OpenAI
+# LLM_PROVIDER=openai
+# LLM_API_KEY=sk-...
+
+# Option 3: Kimi (Moonshot)
+# LLM_PROVIDER=kimi
+# LLM_API_KEY=sk-...
+```
+
+**Get your free Gemini API key**: https://makersuite.google.com/app/apikey
 
 ### Cache Management
 ```bash
@@ -259,6 +291,12 @@ curl -H "x-api-key: demo-key-free" "http://localhost:3000/cache/stats"
 
 # Clear the cache
 curl -X POST -H "x-api-key: demo-key-free" "http://localhost:3000/cache/clear"
+```
+
+### LLM Status
+```bash
+# Check LLM configuration status
+curl -H "x-api-key: demo-key-free" "http://localhost:3000/llm/status"
 ```
 
 ### Performance

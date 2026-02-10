@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const { extractSegment, extractSegmentsBatch, getCacheStats, clearCache } = require('./extractSegment');
+const { extractSegment, extractSegmentsBatch, getCacheStats, clearCache, getLLMStatus } = require('./extractSegment');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -97,7 +97,8 @@ app.get('/', (req, res) => {
       compare: '/compare?road=M1',
       sources: '/sources',
       extract: '/extract (POST - LLM segment extraction demo)',
-      cache: '/cache/stats (cache statistics)'
+      cache: '/cache/stats (cache statistics)',
+      llmStatus: '/llm/status (LLM configuration)'
     },
     features: [
       'LLM-powered segment extraction',
@@ -305,6 +306,21 @@ app.post('/cache/clear', apiKeyAuth, (req, res) => {
   clearCache();
   res.json({
     message: 'Cache cleared successfully',
+    timestamp: new Date().toISOString()
+  });
+});
+
+/**
+ * GET /llm/status - LLM configuration status
+ */
+app.get('/llm/status', apiKeyAuth, (req, res) => {
+  const status = getLLMStatus();
+  res.json({
+    llm: status,
+    providers: ['gemini', 'openai', 'kimi'],
+    setup: status.enabled 
+      ? 'LLM extraction is active'
+      : 'Set LLM_PROVIDER and LLM_API_KEY in .env to enable LLM extraction',
     timestamp: new Date().toISOString()
   });
 });
